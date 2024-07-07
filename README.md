@@ -1,5 +1,5 @@
 Domain truncated Local Natural Orbital methods
 ==============================================
 
-[![Build Status](https://github.com/fishjojo/dlno/workflows/CI/badge.svg)](https://github.com/fishjojo/dlno/actions?query=workflow%3ACI)
-[![codecov](https://codecov.io/gh/fishjojo/dlno/branch/master/graph/badge.svg?token=NLSWGI0PLE)](https://codecov.io/gh/fishjojo/dlno)
+![Build Status](https://github.com/fishjojo/dlno/actions/workflows/ci.yml/badge.svg?branch=master)
+[![codecov](https://codecov.io/github/fishjojo/dlno/graph/badge.svg?token=Z0HUZOXFO7)](https://codecov.io/github/fishjojo/dlno)
