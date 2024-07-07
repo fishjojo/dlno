@@ -136,8 +136,6 @@ def pair_energy_multipole(
             e_mp2_pair[i,j] = -8 * np.sum(aibj2)
 
     e_mp2_pair += e_mp2_pair.T
-    print(np.sum(abs(e_mp2_pair) < 1e-4))
-    #exit()
     return e_mp2_pair
 
 
