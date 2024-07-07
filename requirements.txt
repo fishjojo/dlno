@@ -1,0 +1,2 @@
+pyscf
+opt_einsum

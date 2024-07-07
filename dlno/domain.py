@@ -1,10 +1,11 @@
 from functools import reduce
 import numpy as np
-import util
+from pyscf.gto.mole import inter_distance
+from dlno import util
 
 def get_bp_domain(mol, mos, s1e=None, bp_thr=0.9999,
                   q_thr=None, atmlst=None):
-    """BP domain based on partial Mulliken charge
+    """BP domains based on partial Mulliken charges.
     """
     if s1e is None:
         s1e = mol.intor_symmetric('int1e_ovlp')
@@ -18,7 +19,7 @@ def get_bp_domain(mol, mos, s1e=None, bp_thr=0.9999,
         mos = mos.reshape(-1,1)
     assert mos.ndim == 2
     nao, nmo = mos.shape
-    # TODO mos projected onto smaller basis
+    # TODO project MOs onto smaller basis
     assert nao == mol.nao
 
     rr = atom_distance(mol, atmlst)
@@ -30,7 +31,7 @@ def get_bp_domain(mol, mos, s1e=None, bp_thr=0.9999,
         PS = np.outer(orbi, orbi) * s1e
         GOP = np.sum(PS, axis=1)
 
-        # FIXME check if abs is correct
+        # FIXME Mulliken charge can be negative
         q = abs(np.asarray([GOP[slice(*aoslices[a])].sum() for a in atmlst]))
 
         _atms = atmlst[q > q_thr]
@@ -49,9 +50,7 @@ def get_bp_domain(mol, mos, s1e=None, bp_thr=0.9999,
                         break
         bp_atmlst.append(_atms)
 
-    out = np.empty(len(bp_atmlst), dtype=object)
-    out[:] = bp_atmlst
-    return out
+    return util.list_to_array(bp_atmlst)
 
 
 def get_primary_domain(mol, lmo_bp_domain, pao_bp_domain, ao2pao_map=None):
@@ -72,9 +71,7 @@ def get_primary_domain(mol, lmo_bp_domain, pao_bp_domain, ao2pao_map=None):
             _atms = np.union1d(_atms, reduce(np.union1d, pao_bp_domain[pao_idx]))
         pd_atmlst.append(np.union1d(lmo_bp_domain[i], _atms))
 
-    out = np.empty(len(pd_atmlst), dtype=object)
-    out[:] = pd_atmlst
-    return out
+    return util.list_to_array(pd_atmlst)
 
 
 def _compute_av(mol, mo, s1e=None, atmlst=None):
@@ -86,7 +83,6 @@ def _compute_av(mol, mo, s1e=None, atmlst=None):
         atmlst = np.arange(mol.natm)
 
     mo = np.asarray(mo)
-    #assert mo.ndim == 1
 
     ao_idx = util.ao_index_by_atom(mol, atmlst)
     v = s1e[ao_idx] @ mo
@@ -96,11 +92,10 @@ def _compute_av(mol, mo, s1e=None, atmlst=None):
 
 
 def atom_distance(mol, atmlst=None):
-    """Atom distance array
+    """Atomic distance array
     """
     if atmlst is None:
         atmlst = np.arange(mol.natm)
     coords = mol.atom_coords()[atmlst].reshape(-1,3)
-    rr = np.linalg.norm(coords[:,None,:] - coords[None,:,:], axis=-1)
-    rr[np.diag_indices_from(rr)] = 0
-    return rr
+    return inter_distance(mol, coords=coords)
+

@@ -1,28 +1,67 @@
 from functools import reduce
 import numpy as np
+
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf import scf, df, lo
-from domain import get_bp_domain, get_primary_domain, _compute_av
-import pao as mod_pao 
-import util
-import mp2
-from lno.ad.ccsd import LNOCCSD
+from pyscf.mp.mp2 import MP2, _mo_splitter
 
-def kernel(mydlno, pair_energy_thr=None):
-    if pair_energy_thr is None:
-        pair_energy_thr = mydlno.pair_energy_thr
+from dlno import pao as mod_pao 
+from dlno import util
+from dlno import mp2
+from dlno.domain import (
+    get_bp_domain,
+    get_primary_domain,
+    _compute_av,
+)
+
+
+def kernel(mydlno, auxbasis=None,
+           lno_solver=None, lno_solver_kwargs=None, lno_solver_kernel_kwargs=None,
+           lno_solver_mp2_correct=True):
+    """Driver function for DLNO calculations.
+
+    Parameters
+    ----------
+    auxbasis : str, optional
+        Auxiliary basis set for density fitting.
+    lno_solver : class, optional
+        The LNO solver class. Its ``__init__`` function
+        should take ``mf``, ``fock``, and ``s1e`` as the arguments
+        representing the mean-field object, the Fock matrix,
+        and the overlap matrix, respectively.
+        Its ``kernel`` function should take ``orbloc`` as the argument
+        for the localized occupied orbitals.
+    lno_solver_kwargs : dict, optional
+        Additional keyword arguments passed to ``lno_solver`` for instantiation.
+    lno_solver_kernel_kwargs : dict, optional
+        Additional keyword arguments passed to ``lno_solver``'s kernel function.
+    lno_solver_mp2_correct : bool, default=True
+        Whether to perform a composite MP2 correction within the LNO calculation.
+        If set to ``True``, the ``lno_solver`` class should provide the attribute
+        ``e_corr_pt2`` as the total fragment MP2 correlation energy being subtracted from 
+        ``e_corr``, which is the total fragment high-level correlation energy.
+    """
+    if lno_solver is not None:
+        if lno_solver_kwargs is None:
+            lno_solver_kwargs ={}
+        if lno_solver_kernel_kwargs is None:
+            lno_solver_kernel_kwargs = {}
 
     mol = mydlno.mol
-    s1e=mydlno.s1e
+    s1e = mydlno.s1e
     fock = mydlno.fock
     nocc = mydlno.nocc
+    pair_energy_thr = mydlno.pair_energy_thr
+
     lmo_bp_domain = mydlno.lmo_bp_domain
     lmo_primary_domain = mydlno.lmo_primary_domain
 
     domain_pao = mydlno.build_domain_pao()
-    (eo,vo), (ev,vv) = mydlno.canonicalize(domain_pao)
-    E = mp2.pair_energy_multipole(mol, eo, vo, ev, vv, lmo_primary_domain)
+    (eo, vo), (ev, vv) = mydlno.canonicalize(domain_pao)
+    E = mp2.pair_energy_multipole(mol, eo, vo, ev, vv,
+                                  lmo_primary_domain,
+                                  mydlno.multipole_order)
     E1 = E + np.eye(nocc)
 
     e_domains = []
@@ -35,18 +74,20 @@ def kernel(mydlno, pair_energy_thr=None):
     e_domains = util.list_to_array(e_domains)
     unique_ep_domains = util.unique(ep_domains)
 
-    e_corr = np.sum(E[abs(E) < pair_energy_thr])*.5
+    e_corr = np.sum(E[abs(E) < pair_energy_thr]) * .5 #distant pairs
     lmo = mydlno.lmo
     for atmlst, lmo_idx in unique_ep_domains.items():
         atmlst = list(atmlst)
+        lmo_idx = np.asarray(lmo_idx)
+        logger.debug(mydlno, f"extended primary domain:\n{atmlst}")
+
         fake_mol = util.fake_mol_by_atom(mol, atmlst)
-        auxmol = df.addons.make_auxmol(mol)
+        auxmol = df.addons.make_auxmol(mol, auxbasis=auxbasis)
         fake_auxmol = util.fake_mol_by_atom(auxmol, atmlst)
         _df = df.DF(fake_mol)
         _df.auxmol = fake_auxmol
         _df.build()
 
-        lmo_idx = np.asarray(lmo_idx)
         sub_e_domains = e_domains[lmo_idx]
         unique_sub_e_domains = util.unique(sub_e_domains)
         for k, v in unique_sub_e_domains.items():
@@ -62,55 +103,77 @@ def kernel(mydlno, pair_energy_thr=None):
         fake_mf.converged = True
 
         for atms1, idx1 in unique_sub_e_domains.items():
+            logger.debug(mydlno, f"extended domain:\n{atms1}")
             pao = mod_pao.pao_overlap_with_domain(
                         mol, mydlno.pao, list(atms1), atmlst,
-                        ao2pao_map=mydlno.ao2pao_map, s1e=s1e, ovlp_thr=mydlno.domain_pao_thr)
+                        ao2pao_map=mydlno.ao2pao_map, s1e=s1e,
+                        ovlp_thr=mydlno.domain_pao_thr)
 
             pao_prj = util.project_mo(pao, s21, s22)
 
+            ij = []
             for i in idx1:
-                idx = np.where(abs(E[i]) > pair_energy_thr)[0]
-                lmo_i = lmo[:,i].reshape(-1,1)
-                lmo_j = lmo[:,idx]
+                ij.append(np.where(abs(E1[i]) > pair_energy_thr)[0])
+            unique_strong_pairs = util.unique(ij)
+            for k, v in unique_strong_pairs.items():
+                unique_strong_pairs[k] = idx1[v]
 
-                lmo_i_prj = util.project_mo(lmo_i, s21, s22)
-                lmo_i_prj = lo.orth.vec_lowdin(lmo_i_prj, s=s22)
+            for ij_idx, i_idx in unique_strong_pairs.items():
+                orbloc = []
+                for i in i_idx:
+                    lmo_i = lmo[:,i].reshape(-1,1)
+                    lmo_i_prj = util.project_mo(lmo_i, s21, s22)
+                    lmo_i_prj = lo.orth.vec_lowdin(lmo_i_prj, s=s22)
+                    orbloc.append(lmo_i_prj)
+                orbloc = np.hstack(orbloc)
 
-                lmo_j_prj = util.project_mo(lmo_j, s21, s22)
-                lmo_j_prj = util.orthogonalize(lmo_i_prj, lmo_j_prj, s22)
-                lmo_j_prj = lo.orth.vec_lowdin(lmo_j_prj, s=s22)            
-
-                lmo_ij_prj = np.concatenate([lmo_i_prj, lmo_j_prj], axis=-1)
+                lmo_ij = lmo[:,ij_idx]
+                lmo_ij_prj = util.project_mo(lmo_ij, s21, s22)
+                lmo_ij_prj = lo.orth.vec_lowdin(lmo_ij_prj, s=s22)
                 eij, lmo_ij_canon = semicanonicalize(mol, lmo_ij_prj, fock, atmlst)
 
                 pao_a = util.orthogonalize(lmo_ij_canon, pao_prj, s22)
                 pao_a = lo.orth.vec_lowdin(pao_a, s=s22)
                 ea, pao_a_canon = semicanonicalize(mol, pao_a, fock, atmlst)
 
-                prjlo = reduce(np.dot, (lmo_i_prj.T.conj(), s22, lmo_ij_canon))
-                #MP2
+                # MP2
                 _mo_coeff = np.concatenate([lmo_ij_canon, pao_a_canon], axis=-1)
-                _mo_energy = np.concatenate([eij, ea],axis=None)
+                _mo_energy = np.concatenate([eij, ea], axis=None)
                 _mo_occ = np.zeros((_mo_energy.size,), dtype=np.int32)
-                _mo_occ[np.arange(eij.size)] = 2
+                _mo_occ[np.arange(eij.size)] = 2 #restricted closed-shell
                 fake_mf.mo_coeff = _mo_coeff
                 fake_mf.mo_energy = _mo_energy
                 fake_mf.mo_occ = _mo_occ
                 _mp2 = mp2.DFMP2(fake_mf)
+                prjlo = orbloc.T.conj() @ s22 @ lmo_ij_canon
                 emp2 = _mp2.kernel(prjlo, with_t2=False)[0]
+                _mp2 = None
 
-                mylno = LNOCCSD(fake_mf, thresh=1e-4, fock=fock22, s1e=s22)
-                mylno.kernel(frag_lolist='1o', orbloc=lmo_i_prj)
-                e_corr += mylno.e_corr - emp2
+                if lno_solver is not None:
+                    _lno = lno_solver(fake_mf, fock=fock22, s1e=s22, **lno_solver_kwargs)
+                    _lno.kernel(orbloc=orbloc, **lno_solver_kernel_kwargs)
+                    e_corr += _lno.e_corr
+                    if lno_solver_mp2_correct:
+                        e_corr += emp2 - _lno.e_corr_pt2
+                    _lno = None
+                else:
+                    e_corr += emp2
+
+        _df = None
+        fake_mol = None
+        fake_auxmol = None
+        fake_mf = None
+        s21 = s22 = None
+        fock22 = None
     return e_corr
 
-def build_domain_pao(mydlno, domain_pao_thr=1e-6):
+def build_domain_pao(mydlno, domain_pao_thr=1e-4):
     mol = mydlno.mol
     lmo_bp_domain = mydlno.lmo_bp_domain
     lmo_p_domain = mydlno.lmo_primary_domain
-    ao2pao_map = mydlno.ao2pao_map
     s1e = mydlno.s1e
     pao = mydlno.pao
+    ao2pao_map = mydlno.ao2pao_map
 
     domain_pao = []
     for i in range(mydlno.nocc):
@@ -119,13 +182,11 @@ def build_domain_pao(mydlno, domain_pao_thr=1e-6):
                     ao2pao_map=ao2pao_map, s1e=s1e, ovlp_thr=domain_pao_thr)
         domain_pao.append(pao_i)
 
-    out = np.empty(len(domain_pao), dtype=object)
-    out[:] = domain_pao
-    return out
+    return util.list_to_array(domain_pao)
 
 
 def canonicalize(mydlno, domain_pao, fock=None, lmo=None,
-                 project=False, orth_ov=False):
+                 project=True, orth_ov=True):
     if fock is None:
         fock = mydlno.fock
     if lmo is None:
@@ -133,8 +194,8 @@ def canonicalize(mydlno, domain_pao, fock=None, lmo=None,
 
     if project:
         mol = mydlno.mol
-        lmo_p_domain = mydlno.lmo_primary_domain
         s1e = mydlno.s1e
+        lmo_p_domain = mydlno.lmo_primary_domain
         av_thr = mydlno.pao_bp_domain_thr
 
     e_occ = []
@@ -153,34 +214,59 @@ def canonicalize(mydlno, domain_pao, fock=None, lmo=None,
             s22 = s1e[np.ix_(ao_idx, ao_idx)]
 
             lmo_i = util.project_mo(lmo_i, s21, s22)
-            lmo_i = lo.orth.vec_lowdin(lmo_i, s=s22)
+            lmo_i = lo.vec_lowdin(lmo_i, s=s22)
 
             av = _compute_av(mol, pao_i, s1e=s1e, atmlst=lmo_p_domain[i])
             pao_i = pao_i[:,av>av_thr]
             pao_i = util.project_mo(pao_i, s21, s22)
-            pao_i = lo.orth.vec_lowdin(pao_i, s=s22)
+            pao_i = lo.vec_lowdin(pao_i, s=s22)
 
             if orth_ov:
                 pao_i = util.orthogonalize(lmo_i, pao_i, s22)
-                pao_i = lo.orth.vec_lowdin(pao_i, s=s22)
+                pao_i = lo.vec_lowdin(pao_i, s=s22)
 
-        foo = reduce(np.dot, (lmo_i.T.conj(), fock_i, lmo_i))
+        foo = lmo_i.conj().T @ fock_i @ lmo_i
         e_occ.append(foo[0,0])
         v_occ.append(lmo_i)
 
-        fvv = reduce(np.dot, (pao_i.T.conj(), fock_i, pao_i))
+        fvv = pao_i.conj().T @ fock_i @ pao_i
         w, v = np.linalg.eigh(fvv)
         logger.debug1(mydlno, f"canonical domain PAO energy {i}:\n{w}")
         e_vir.append(w)
-        v_vir.append(np.dot(pao_i, v))
+        v_vir.append(pao_i @ v)
     return (e_occ, v_occ), (e_vir, v_vir)
 
 
-class DLNO(lib.StreamObject):
-    lmo_method = 'boys'
+class DLNO(MP2):
+    """DLNO base class.
+
+    Attributes
+    ----------
+    lmo_method : str, default="boys"
+        Localization method for occupied MOs.
+        The occupied local orbitals can also be supplied
+        through the ``lmo`` attribute.
+    lmo_kwargs : dict
+        Options for MO localizer.
+    lmo_bp_domain_thr : float, default=0.999
+        Threshold for defining the LMO BP domain.
+    pao_bp_domain_thr : float, default=0.98
+        Threshold for defining the PAO BP domain.
+    pao_norm_thr : float, default=1e-4
+        PAOs with norm smaller than ``pao_norm_thr`` are discarded.
+    domain_pao_thr : float, default=1e-4
+        Threshold for selecting PAOs in the larger domain that
+        overlap with the smaller domain.
+    pair_energy_thr : float, default=1e-4
+        Energy cutoff for distinguishing strong and distant pairs
+        using OS-MP2 pair correlation energy.
+    multipole_order : int, default=3
+        Multipole expansion order of OS-MP2 pair correlation energy.
+    """
+    lmo_method = "boys"
     lmo_kwargs = None
 
-    lmo_bp_domain_thr = 0.9999
+    lmo_bp_domain_thr = 0.999
     pao_bp_domain_thr = 0.98
 
     pao_norm_thr = 1e-4
@@ -190,13 +276,12 @@ class DLNO(lib.StreamObject):
     domain_orth_ov = True
 
     pair_energy_thr = 1e-4
+    multipole_order = 3
 
-    def __init__(self, mf):
-        self._scf = mf
-        self.mol = mf.mol
-        self.mo_coeff = mf.mo_coeff
-        self.nocc = self.mol.nelectron//2
-        self.verbose = self.mol.verbose
+    def __init__(self, mf, *,
+                 frozen=None, mo_coeff=None, mo_occ=None):
+        MP2.__init__(self, mf,
+                     frozen=frozen, mo_coeff=mo_coeff, mo_occ=mo_occ)
 
         # private
         self._s1e = None
@@ -214,8 +299,8 @@ class DLNO(lib.StreamObject):
             self._s1e = self.mol.intor_symmetric('int1e_ovlp')
         return self._s1e
     @s1e.setter
-    def s1e(self, value):
-        self._s1e = value
+    def s1e(self, s):
+        self._s1e = s
 
     @property
     def fock(self):
@@ -223,8 +308,8 @@ class DLNO(lib.StreamObject):
             self._fock = self._scf.get_fock()
         return self._fock
     @fock.setter
-    def fock(self, value):
-        self._fock = value
+    def fock(self, f):
+        self._fock = f
 
     @property
     def lmo(self):
@@ -282,18 +367,23 @@ class DLNO(lib.StreamObject):
     def pao_bp_domain(self, value):
         self._pao_bp_domain = value
 
-    def build_lmo(self, lmo_method=None, lmo_kwargs=None):
+    def build_lmo(self, orbocc=None, lmo_method=None, lmo_kwargs=None):
         if lmo_method is None:
             lmo_method = self.lmo_method
         if lmo_kwargs is None:
             lmo_kwargs = self.lmo_kwargs
         if lmo_kwargs is None:
             lmo_kwargs = {}
+        if orbocc is None:
+            orbocc = self.mo_coeff[:, _mo_splitter(self)[1]]
 
         mol = self.mol
-        orbo = self.mo_coeff[:,:self.nocc]
         if lmo_method.lower() == 'boys':
-            lmo = lo.Boys(mol, mo_coeff=orbo).kernel(**lmo_kwargs)
+            lmo = lo.Boys(mol, mo_coeff=orbocc).kernel(**lmo_kwargs)
+        elif lmo_method.lower() == 'pm':
+            lmo = lo.PM(mol, mo_coeff=orbocc).kernel(**lmo_kwargs)
+        elif lmo_method.lower() == 'er':
+            lmo = lo.ER(mol, mo_coeff=orbocc).kernel(**lmo_kwargs)
         else:
             raise NotImplementedError
         return lmo
@@ -306,7 +396,11 @@ class DLNO(lib.StreamObject):
     def build_pao(self, pao_norm_thr=None):
         if pao_norm_thr is None:
             pao_norm_thr = self.pao_norm_thr
-        return mod_pao.pao(self.mol, self.lmo, self.s1e, pao_norm_thr)
+
+        mos = np.hstack((self.mo_coeff[:,_mo_splitter(self)[0]],
+                         self.mo_coeff[:,_mo_splitter(self)[1]],
+                         self.mo_coeff[:,_mo_splitter(self)[3]]))
+        return mod_pao.pao(self.mol, mos, self.s1e, pao_norm_thr)
 
     def build_pao_bp_domain(self, pao_bp_domain_thr=None):
         if pao_bp_domain_thr is None:
@@ -351,46 +445,8 @@ def semicanonicalize(mol, mos, fock, atmlst):
     ao_idx = util.ao_index_by_atom(mol, atmlst)
     fock = fock[np.ix_(ao_idx, ao_idx)]
 
-    f = reduce(np.dot, (mos.T.conj(), fock, mos))
+    f = mos.T.conj() @ fock @ mos
     w, v = np.linalg.eigh(f)
     logger.debug1(mol, f"semicanonical orbital energy :\n{w}")
-    return w, np.dot(mos, v)
+    return w, mos @ v
 
-
-if __name__ == "__main__":
-    from pyscf import gto, scf, lo
-    from pyscf.mp import dfmp2
-    
-    mol = gto.Mole()
-    mol.atom = '''
-        O         -1.48516       -0.11472        0.00000
-        H         -1.86842        0.76230        0.00000
-        H         -0.53383        0.04051        0.00000
-        O          1.41647        0.11126        0.00000
-        H          1.74624       -0.37395       -0.75856
-        H          1.74624       -0.37395        0.75856
-        H        -17.01061        0.77828        0.00081
-        O        -17.45593        0.85616       -0.83572
-        H        -18.39143        0.81791       -0.66982
-    '''
-    mol.atom = 'h2o_10.xyz'
-    mol.basis = 'ccpvdz'
-    mol.verbose = 4
-    mol.max_memory = 12000
-    mol.build()
-
-    mf = scf.RHF(mol).density_fit()
-    e_hf = mf.kernel()
-
-    mymp = dfmp2.DFMP2(mf)
-    mymp.kernel()
-
-    mylno = DLNO(mf)
-    mylno.lmo_bp_domain_thr = 0.9999
-    mylno.pao_bp_domain_thr = 0.98
-    mylno.domain_pao_thr = 1e-4
-    mylno.pair_energy_thr = 1e-4
-
-    emp2 = mylno.kernel()
-
-    print(emp2, mymp.e_corr, emp2-mymp.e_corr)

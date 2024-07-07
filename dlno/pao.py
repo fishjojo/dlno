@@ -1,19 +1,14 @@
-from functools import partial, reduce
 import numpy as np
 from pyscf.scf.addons import canonical_orth_
-import util
+from dlno import util
 
-einsum = partial(np.einsum, optimize=True)
-
-
-def pao(mol, mos, s1e=None, norm_thr=1e-6):
+def pao(mol, mos, s1e=None, norm_thr=1e-4):
     """Compute PAOs.
 
     Parameters
     ----------
-    norm_thr : float, optional
-        PAOs with norm than `norm_thr` are discarded.
-        Default is `1e-6`.
+    norm_thr : float, default=1e-4
+        PAOs with norms smaller than ``norm_thr`` are discarded.
 
     Returns
     -------
@@ -22,7 +17,7 @@ def pao(mol, mos, s1e=None, norm_thr=1e-6):
 
     Notes
     -----
-    `mos` need to be orthonormal.
+    ``mos`` need to be orthonormal.
     """
     if s1e is None:
         s1e = mol.intor_symmetric('int1e_ovlp')
@@ -34,7 +29,7 @@ def pao(mol, mos, s1e=None, norm_thr=1e-6):
     nao, nmo = mos.shape
 
     paos = np.eye(nao) - mos @ (mos.T.conj() @ s1e)
-    norm = np.sqrt(einsum('ui,uv,vi->i', paos.conj(), s1e, paos))
+    norm = np.sqrt(util.einsum('ui,uv,vi->i', paos.conj(), s1e, paos))
     pao_idx = np.where(norm > norm_thr)[0]
     inv_idx = np.full(nao, -1, dtype=np.int32)
     inv_idx[pao_idx] = np.arange(len(pao_idx))
@@ -56,7 +51,7 @@ def pao_by_atom(mol, paos, atmlst, ao2pao_map=None):
 
 def pao_overlap_with_domain(
         mol, paos, bp_domain, p_domain=None,
-        ao2pao_map=None, s1e=None, ovlp_thr=1e-6, orth_thr=1e-6
+        ao2pao_map=None, s1e=None, ovlp_thr=1e-4, orth_thr=1e-6
     ):
     """PAOs in the larger domain that overlap with the smaller domain.
     """
@@ -67,16 +62,16 @@ def pao_overlap_with_domain(
     if p_domain is not None:
         pao_pd = pao_by_atom(mol, paos, p_domain, ao2pao_map)
 
-    x = canonical_orth_(reduce(np.dot, (pao_pd.T.conj(), s1e, pao_pd)), thr=orth_thr)
-    pao_pd_orth = np.dot(pao_pd, x)
+    x = canonical_orth_(pao_pd.T.conj() @ s1e @ pao_pd, thr=orth_thr)
+    pao_pd_orth = pao_pd @ x
 
     ao_idx_bp = util.ao_index_by_atom(mol, bp_domain)
     s21 = s1e[ao_idx_bp]
     s22 = s1e[np.ix_(ao_idx_bp, ao_idx_bp)]
     s22_inv = np.linalg.inv(s22)
 
-    tmp = np.dot(s21, pao_pd_orth)
-    ovlp = reduce(np.dot, (tmp.T.conj(), s22_inv, tmp))
+    tmp = s21 @ pao_pd_orth
+    ovlp = tmp.T.conj() @ s22_inv @ tmp
     w, v = np.linalg.eigh(ovlp)
-    return np.dot(pao_pd_orth, v[:,w>ovlp_thr])
+    return pao_pd_orth @ v[:, w>ovlp_thr]
 

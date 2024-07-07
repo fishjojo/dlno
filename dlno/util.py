@@ -1,16 +1,25 @@
-from functools import reduce
+from functools import reduce, partial
 import numpy as np
+try:
+    from opt_einsum import contract
+except ImportError:
+    contract = partial(np.einsum, optimize=True)
 from pyscf import lib
 
 def project_mo(mo1, s21, s22):
-    return lib.cho_solve(s22, np.dot(s21, mo1), strict_sym_pos=False)
+    """Project ``mo1`` to basis ``2``.
+    """
+    return lib.cho_solve(s22, s21 @ mo1, strict_sym_pos=False)
 
 def orthogonalize(mo1, mo2, s):
-    """Project `mo1` out of `mo2`.
-    `mo1` must be orthonormal.
+    """Project ``mo1`` out of ``mo2``.
+
+    Notes
+    -----
+    ``mo1`` must be orthonormal.
     """
-    s12 = np.dot(mo1.T.conj(), np.dot(s, mo2))
-    mo2 = mo2 - np.dot(mo1, s12)
+    s12 = mo1.conj().T @ s @ mo2
+    mo2 = mo2 - mo1 @ s12
     return mo2
 
 def ao_index_by_atom(mol, atmlst):
@@ -48,4 +57,7 @@ def list_to_array(a):
     out = np.empty(len(a), dtype=object)
     out[:] = a
     return out
+
+def einsum(expr, *args):
+    return contract(expr, *args)
 

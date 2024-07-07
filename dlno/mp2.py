@@ -3,112 +3,142 @@ import numpy as np
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.mp import dfmp2
-from multipole import *
+from dlno.multipole import *
+from dlno.util import einsum
 
 WITH_T2 = True
 
-einsum = partial(np.einsum, optimize=True)
+def pair_energy_multipole(
+        mol,
+        e_occ,
+        mo_occ,
+        e_vir,
+        mo_vir,
+        atmlst=None,
+        order=3,
+    ):
+    """Multipole approximation to the OS-MP2 pair energy.
 
-def pair_energy_multipole(mol,
-                          e_occ, mo_occ,
-                          e_vir, mo_vir,
-                          atmlst=None):
+    Parameters
+    ----------
+    e_occ : list
+        Occupied orbital energies.
+    mo_occ : list
+        Occupied orbital coefficients.
+    e_vir : list
+        Virtual orbital energies for each occupied orbital.
+    mo_vir : list
+        Virtual orbital coefficients for each occupied orbital.
+    atmlst : array
+        Atoms on which the basis functions are used
+        to compute the operators, for each occupied orbital.
+    order : int, default=3
+        Multipole expansion orders, can be 2, 3, and 4.
+
+    Returns
+    -------
+    e_mp2_pair : array
+        OS-MP2 pair energy.
+    """
     nocc = len(e_occ)
     if atmlst is None:
         atmlst = [None,] * nocc
-    E = np.zeros((nocc,nocc))
+    e_mp2_pair = np.zeros((nocc, nocc))
 
     Rs = []
     mu_vo = []
     theta_vo = []
     omega_vo = []
     e_vo = []
+
     for i in range(nocc):
-        lmo_i = mo_occ[i]
+        lmo_i = mo_occ[i].ravel()
         atmlst_i = atmlst[i]
         Di = dipole_op(mol, atmlst=atmlst_i)
-        Ri = einsum('ui,xuv,vi->x', lmo_i.conj(), Di, lmo_i)
-        #Qi = quadrupole_op(mol, R=Ri, atmlst=atmlst_i)
-        #Oi = octupole_op(mol, R=Ri, atmlst=atmlst_i)
+        Ri = einsum('u,xuv,v->x', lmo_i.conj(), Di, lmo_i)
         Rs.append(Ri)
 
         pao_i = mo_vir[i]
-        mu_ai = einsum('ua,xuv,vi->xai', pao_i.conj(), Di, lmo_i)
-        #theta_ai = einsum('ua,xyuv,vi->xyai', pao_i.conj(), Qi, lmo_i)
-        #omega_ai = einsum('ua,xyzuv,vi->xyzai', pao_i.conj(), Oi, lmo_i)
+        mu_ai = einsum('ua,xuv,v->xa', pao_i.conj(), Di, lmo_i)
         mu_vo.append(mu_ai)
-        #theta_vo.append(theta_ai)
-        #omega_vo.append(omega_ai)
 
-        e_i = np.asarray(e_occ[i]).ravel()
-        e_a = e_vir[i]
-        e_ai = e_a[:,None] - e_i[None,:]
+        e_ai = e_vir[i] - e_occ[i]
         e_vo.append(e_ai)
 
-    for i in range(nocc):
-        Ri = Rs[i]
-        mu_ai = mu_vo[i]
-        #theta_ai = theta_vo[i]
-        #omega_ai = omega_vo[i]
-        e_ai = e_vo[i]
+        if order > 2:
+            Qi = quadrupole_op(mol, R=Ri, atmlst=atmlst_i)
+            theta_ai = einsum('ua,xyuv,v->xya', pao_i.conj(), Qi, lmo_i)
+            theta_vo.append(theta_ai)
+
+        if order > 3:
+            Oi = octupole_op(mol, R=Ri, atmlst=atmlst_i)
+            omega_ai = einsum('ua,xyzuv,v->xyza', pao_i.conj(), Oi, lmo_i)
+            omega_vo.append(omega_ai)
 
         for j in range(i):
             Rj = Rs[j]
-            R = np.linalg.norm(Ri - Rj)
-            R_bar = (Ri-Rj)/R
+            R = np.linalg.norm(Rj - Ri)
+            R_bar = (Rj - Ri) / R
 
             mu_bj = mu_vo[j]
-            aibj_2 = einsum('xai,xbj->aibj', mu_ai, mu_bj)
-            tmp_ai = einsum('x,xai->ai', R_bar, mu_ai)
-            tmp_bj = einsum('x,xai->ai', R_bar, mu_bj)
-            aibj_2 -= einsum('ai,bj->aibj', tmp_ai, tmp_bj) * 3
+            aibj_2 = mu_ai.T @ mu_bj
+            tmp_ai = R_bar @ mu_ai
+            tmp_bj = R_bar @ mu_bj
+            aibj_2 -= np.outer(tmp_ai, tmp_bj * 3)
             aibj_2 /= R**3
 
-            #theta_bj = theta_vo[j]
+            if order > 2:
+                theta_bj = theta_vo[j]
+                RR = np.outer(R_bar, R_bar)
 
-            #tmp1_bj = einsum('x,xybj,y->bj', R_bar, theta_bj, R_bar)
-            #aibj_3  = einsum('ai,bj->aibj', tmp_ai, tmp1_bj) * 15
-            #aibj_3 -= einsum('xai,xybj,y->aibj', mu_ai, theta_bj, R_bar) * 3
-            #aibj_3 -= einsum('yai,xybj,x->aibj', mu_ai, theta_bj, R_bar) * 3
-            #aibj_3 -= einsum('xai,yybj,x->aibj', mu_ai, theta_bj, R_bar) * 3
+                tmp1_ai = RR.ravel() @ theta_ai.reshape(9,-1)
+                tmp1_bj = RR.ravel() @ theta_bj.reshape(9,-1)
+                aibj_3  = np.outer(tmp1_ai, tmp_bj * 5)
+                aibj_3 -= np.outer(tmp_ai, tmp1_bj * 5)
 
-            #tmp1_ai = einsum('x,xyai,y->ai', R_bar, theta_ai, R_bar)
-            #aibj_3 += einsum('bj,ai->aibj', tmp_bj, tmp1_ai) * 15
-            #aibj_3 -= einsum('xbj,xyai,y->aibj', mu_bj, theta_ai, R_bar) * 3
-            #aibj_3 -= einsum('ybj,xyai,x->aibj', mu_bj, theta_ai, R_bar) * 3
-            #aibj_3 -= einsum('xbj,yyai,x->aibj', mu_bj, theta_ai, R_bar) * 3
+                mu_R_ai = einsum('xa,y->xya', mu_ai, R_bar).reshape(9,-1)
+                mu_R_bj = einsum('xb,y->xyb', mu_bj, R_bar).reshape(9,-1)
+                aibj_3 += (2 * mu_R_ai.T) @ theta_bj.reshape(9,-1)
+                aibj_3 -= theta_ai.reshape(9,-1).T @ (mu_R_bj * 2)
 
-            #aibj_3 /= R**4
+                aibj_3 /= R**4
 
-            #R_bar_2 = np.outer(R_bar, R_bar)
-            #R_bar_3 = np.einsum('x,y,z->xyz', R_bar, R_bar, R_bar)
+            if order > 3:
+                omega_bj = omega_vo[j]
+                RRR = einsum('x,y,z->xyz', R_bar, R_bar, R_bar)
 
-            #omega_bj = omega_vo[j]
+                aibj_4  = einsum('xa,xyzb,yz->ab', mu_ai, omega_bj, RR * 9)
+                aibj_4 += einsum('xy,xyza,zb->ab', RR * 9, omega_ai, mu_bj)
 
-            #aibj_4  = einsum('xai,xyzbj,yz->aibj', mu_ai, omega_bj, R_bar_2) * 9
-            #aibj_4 -= einsum('ai,xyzbj,xyz->aibj', tmp_ai, omega_bj, R_bar_3) * 21
+                omega_R3_ai = RRR.ravel() @ omega_ai.reshape(27,-1)
+                omega_R3_bj = RRR.ravel() @ omega_bj.reshape(27,-1)
+                aibj_4 -= np.outer(tmp_ai, omega_R3_bj * 21)
+                aibj_4 -= np.outer(omega_R3_ai, tmp_bj * 21)
 
-            #aibj_4 += einsum('xbj,xyzai,yz->aibj', mu_bj, omega_ai, R_bar_2) * 9
-            #aibj_4 -= einsum('bj,xyzai,xyz->aibj', tmp_bj, omega_ai, R_bar_3) * 21
+                aibj_4 += np.outer(tmp1_ai, tmp1_bj * 35)
+                
+                tmp2_ai = einsum('xya,y->xa', theta_ai, R_bar)
+                tmp2_bj = einsum('xyb,y->xb', theta_bj, R_bar)
+                aibj_4 -= tmp2_ai.T @ (tmp2_bj * 20)
 
-            #aibj_4 += einsum('ai,bj->aibj', tmp1_ai, tmp1_bj) * 35
-            #
-            #tmp2_ai = einsum('xyai,y->xai', theta_ai, R_bar)
-            #tmp2_bj = einsum('xybj,y->xbj', theta_bj, R_bar)
-            #aibj_4 -= einsum('xai,xbj->aibj', tmp2_ai, tmp2_bj) * 20
+                aibj_4 += theta_ai.reshape(9,-1).T @ (theta_bj.reshape(9,-1) * 2)
 
-            #aibj_4 += einsum('xyai,yxbj->aibj', theta_ai, theta_bj) * 2
+                aibj_4 /= (3 * R**5)
 
-            #aibj_4 /= (R**5 * 3)
-
-            aibj = aibj_2 #+ aibj_3 #+ aibj_4            
+            aibj = aibj_2
+            if order > 2:
+                aibj += aibj_3
+            if order > 3:
+                aibj += aibj_4
 
             e_bj = e_vo[j]
-            aibj2 = aibj * aibj / (e_ai[:,:,None,None] + e_bj[None,None,:,:])
-            E[i,j] = -8 * einsum('aibj->ij', aibj2)[0,0]
+            aibj2 = aibj * aibj / (e_ai[:,None] + e_bj[None,:])
+            e_mp2_pair[i,j] = -8 * np.sum(aibj2)
 
-    E += E.T
-    return E
+    e_mp2_pair += e_mp2_pair.T
+    print(np.sum(abs(e_mp2_pair) < 1e-4))
+    #exit()
+    return e_mp2_pair
 
 
 def kernel(mp, prj, mo_energy=None, mo_coeff=None, eris=None,
@@ -132,19 +162,19 @@ def kernel(mp, prj, mo_energy=None, mo_coeff=None, eris=None,
         p0, p1 = p1, p1 + qov.shape[0]
         Lov[p0:p1] = qov
 
-    ovov = np.dot(Lov.T, Lov).reshape(nocc,nvir,nocc,nvir)
+    ovov = (Lov.T @ Lov).reshape(nocc,nvir,nocc,nvir)
     oovv = ovov.transpose(0,2,1,3)
     t2 = oovv / lib.direct_sum('jb+ia->ijba', eia, eia)
 
-    ed_ij = np.einsum('pjab,qjab', t2, oovv) * 2
-    ex_ij = -np.einsum('pjab,qjba', t2, oovv)
+    ed_ij = einsum('pjab,qjab', t2, oovv) * 2
+    ex_ij = -einsum('pjab,qjba', t2, oovv)
 
     if not with_t2:
         t2 = None
 
-    m = np.dot(prj.T.conj(), prj)
-    ed = np.einsum('ij,ji', ed_ij, m).real
-    ex = np.einsum('ij,ji', ex_ij, m).real
+    m = prj.T.conj() @ prj
+    ed = einsum('ij,ji', ed_ij, m).real
+    ex = einsum('ij,ji', ex_ij, m).real
 
     emp2_ss = ed*0.5 + ex
     emp2_os = ed*0.5
