@@ -55,12 +55,12 @@ def pao_overlap_with_domain(
     ):
     """PAOs in the larger domain that overlap with the smaller domain.
     """
+    if p_domain is None:
+        p_domain = bp_domain
     if s1e is None:
         s1e = mol.intor_symmetric('int1e_ovlp')
 
-    pao_pd = paos
-    if p_domain is not None:
-        pao_pd = pao_by_atom(mol, paos, p_domain, ao2pao_map)
+    pao_pd = pao_by_atom(mol, paos, p_domain, ao2pao_map)
 
     x = canonical_orth_(pao_pd.T.conj() @ s1e @ pao_pd, thr=orth_thr)
     pao_pd_orth = pao_pd @ x

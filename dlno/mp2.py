@@ -15,7 +15,7 @@ def pair_energy_multipole(
         e_vir,
         mo_vir,
         atmlst=None,
-        order=3,
+        order=4,
     ):
     """Multipole approximation to the OS-MP2 pair energy.
 
@@ -32,7 +32,7 @@ def pair_energy_multipole(
     atmlst : array
         Atoms on which the basis functions are used
         to compute the operators, for each occupied orbital.
-    order : int, default=3
+    order : int, default=4
         Multipole expansion orders, can be 2, 3, and 4.
 
     Returns

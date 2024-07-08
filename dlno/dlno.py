@@ -53,6 +53,7 @@ def kernel(mydlno, auxbasis=None,
     fock = mydlno.fock
     nocc = mydlno.nocc
     pair_energy_thr = mydlno.pair_energy_thr
+    av_thr = mydlno.pao_bp_domain_thr
 
     lmo_bp_domain = mydlno.lmo_bp_domain
     lmo_primary_domain = mydlno.lmo_primary_domain
@@ -102,10 +103,12 @@ def kernel(mydlno, auxbasis=None,
         for atms1, idx1 in unique_sub_e_domains.items():
             logger.debug(mydlno, f"extended domain:\n{atms1}")
             pao = mod_pao.pao_overlap_with_domain(
-                        mol, mydlno.pao, list(atms1), atmlst,
+                        mol, mydlno.pao, list(atms1),
                         ao2pao_map=mydlno.ao2pao_map, s1e=s1e,
                         ovlp_thr=mydlno.domain_pao_thr)
 
+            av = _compute_av(mol, pao, s1e=s1e, atmlst=atmlst)
+            pao = pao[:,av>av_thr]
             pao_prj = util.project_mo(pao, s21, s22)
 
             ij = []
@@ -175,7 +178,7 @@ def build_domain_pao(mydlno, domain_pao_thr=1e-4):
     domain_pao = []
     for i in range(mydlno.nocc):
         pao_i = mod_pao.pao_overlap_with_domain(
-                    mol, pao, lmo_bp_domain[i], lmo_p_domain[i],
+                    mol, pao, lmo_bp_domain[i],
                     ao2pao_map=ao2pao_map, s1e=s1e, ovlp_thr=domain_pao_thr)
         domain_pao.append(pao_i)
 
@@ -239,7 +242,7 @@ class DLNO(MP2):
 
     Attributes
     ----------
-    lmo_method : str, default="boys"
+    lmo_method : str, default="pm"
         Localization method for occupied MOs.
         The occupied local orbitals can also be supplied
         through the ``lmo`` attribute.
@@ -257,10 +260,10 @@ class DLNO(MP2):
     pair_energy_thr : float, default=1e-4
         Energy cutoff for distinguishing strong and distant pairs
         using OS-MP2 pair correlation energy.
-    multipole_order : int, default=3
+    multipole_order : int, default=4
         Multipole expansion order of OS-MP2 pair correlation energy.
     """
-    lmo_method = "boys"
+    lmo_method = "pm"
     lmo_kwargs = None
 
     lmo_bp_domain_thr = 0.999
@@ -273,7 +276,7 @@ class DLNO(MP2):
     domain_orth_ov = True
 
     pair_energy_thr = 1e-4
-    multipole_order = 3
+    multipole_order = 4
 
     def __init__(self, mf, *,
                  frozen=None, mo_coeff=None, mo_occ=None):

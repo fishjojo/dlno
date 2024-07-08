@@ -3,7 +3,7 @@ import numpy as np
 from pyscf.gto.mole import inter_distance
 from dlno import util
 
-def get_bp_domain(mol, mos, s1e=None, bp_thr=0.9999,
+def get_bp_domain(mol, mos, s1e=None, bp_thr=0.999,
                   q_thr=None, atmlst=None):
     """BP domains based on partial Mulliken charges.
     """
