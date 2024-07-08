@@ -82,10 +82,7 @@ def kernel(mydlno, auxbasis=None,
         logger.debug(mydlno, f"extended primary domain:\n{atmlst}")
 
         fake_mol = util.fake_mol_by_atom(mol, atmlst)
-        auxmol = df.addons.make_auxmol(mol, auxbasis=auxbasis)
-        fake_auxmol = util.fake_mol_by_atom(auxmol, atmlst)
-        _df = df.DF(fake_mol)
-        _df.auxmol = fake_auxmol
+        _df = df.DF(fake_mol, auxbasis=auxbasis)
         _df.build()
 
         sub_e_domains = e_domains[lmo_idx]

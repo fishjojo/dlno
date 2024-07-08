@@ -4,7 +4,7 @@ try:
     from opt_einsum import contract
 except ImportError:
     contract = partial(np.einsum, optimize=True)
-from pyscf import lib
+from pyscf import lib, gto
 
 def project_mo(mo1, s21, s22):
     """Project ``mo1`` to basis ``2``.
@@ -36,9 +36,12 @@ def shell_index_by_atom(mol, atmlst):
 
 def fake_mol_by_atom(mol, atmlst=None):
     if atmlst is not None:
-        shls = shell_index_by_atom(mol, atmlst)
-        fake_mol = mol.copy()
-        fake_mol._bas = fake_mol._bas[shls]
+        fake_mol = mol.copy(deep=False)
+        fake_mol._atom = [mol._atom[a] for a in atmlst]
+        fake_mol._atm, fake_mol._bas, fake_mol._env = \
+            fake_mol.make_env(fake_mol._atom, fake_mol._basis,
+                              mol._env[:gto.PTR_ENV_START])
+        fake_mol._built = True
     else:
         fake_mol = mol
     return fake_mol
