@@ -6,7 +6,7 @@ from pyscf.mp import dfmp2
 from dlno import dlno
 
 mol = gto.Mole()
-mol.atom = '''
+mol.atom = """
     O         -1.48516       -0.11472        0.00000
     H         -1.86842        0.76230        0.00000
     H         -0.53383        0.04051        0.00000
@@ -16,8 +16,8 @@ mol.atom = '''
     H        -17.01061        0.77828        0.00081
     O        -17.45593        0.85616       -0.83572
     H        -18.39143        0.81791       -0.66982
-'''
-mol.basis = 'ccpvdz'
+"""
+mol.basis = "ccpvtz"
 mol.verbose = 0
 mol.max_memory = 8000
 mol.build()
@@ -31,7 +31,7 @@ mymp.kernel()
 
 # Local DF-MP2
 mylno = dlno.DLNO(mf)
-mylno.lmo_method='pm'
+mylno.lmo_method="pm"
 mylno.lmo_bp_domain_thr = 0.999
 mylno.pao_bp_domain_thr = 0.98
 mylno.domain_pao_thr = 1e-4

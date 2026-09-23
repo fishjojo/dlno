@@ -141,31 +141,28 @@ def pair_energy_multipole(
 
 def kernel(mp, prj, mo_energy=None, mo_coeff=None, eris=None,
            with_t2=WITH_T2):
-    if mo_energy is not None or mo_coeff is not None:
-        assert (mp.frozen == 0 or mp.frozen is None)
+    if eris is None:
+        eris = mp.ao2mo()
 
-    if eris is None:      eris = mp.ao2mo(mo_coeff)
-    if mo_energy is None: mo_energy = eris.mo_energy
-    if mo_coeff is None:  mo_coeff = eris.mo_coeff
+    nocc, nvir, naux = eris.nocc, eris.nvir, eris.naux
+    occ_energy, vir_energy = mp.split_mo_energy()[1:3]
+    eia = occ_energy[:,None] - vir_energy[None,:]
 
-    nocc = mp.nocc
-    nvir = mp.nmo - nocc
-    naux = mp.with_df.get_naoaux()
-    eia = mo_energy[:nocc,None] - mo_energy[None,nocc:]
+    if isinstance(eris.ovL, np.ndarray):
+        ovL = eris.ovL
+    else:
+        ovL = np.empty((nocc, nvir, naux))
+        occ_blksize = nocc # incore anyway
+        for ibatch,(i0,i1) in enumerate(lib.prange(0,nocc,occ_blksize)):
+            ovL[i0:i1] = eris.get_occ_blk(i0,i1)
 
-    Lov = np.empty((naux, nocc*nvir))
-    p1 = 0
-    for istep, qov in enumerate(mp.loop_ao2mo(mo_coeff, nocc)):
-        logger.debug(mp, 'Load cderi step %d', istep)
-        p0, p1 = p1, p1 + qov.shape[0]
-        Lov[p0:p1] = qov
-
-    ovov = (Lov.T @ Lov).reshape(nocc,nvir,nocc,nvir)
+    ovL = ovL.reshape((-1, naux))
+    ovov = (ovL @ ovL.T).reshape(nocc,nvir,nocc,nvir)
     oovv = ovov.transpose(0,2,1,3)
     t2 = oovv / lib.direct_sum('jb+ia->ijba', eia, eia)
 
-    ed_ij = einsum('pjab,qjab', t2, oovv) * 2
-    ex_ij = -einsum('pjab,qjba', t2, oovv)
+    ed_ij = einsum('pjab,qjab->pq', t2, oovv) * 2
+    ex_ij = -einsum('pjab,qjba->pq', t2, oovv)
 
     if not with_t2:
         t2 = None
