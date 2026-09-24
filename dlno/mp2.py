@@ -17,7 +17,7 @@ def pair_energy_multipole(
         atmlst=None,
         order=4,
     ):
-    """Multipole approximation to the OS-MP2 pair energy.
+    """Multipole approximation to the MP2 pair energy.
 
     Parameters
     ----------
@@ -38,7 +38,7 @@ def pair_energy_multipole(
     Returns
     -------
     e_mp2_pair : array
-        OS-MP2 pair energy.
+        MP2 pair energy.
     """
     nocc = len(e_occ)
     if atmlst is None:
@@ -93,13 +93,13 @@ def pair_energy_multipole(
 
                 tmp1_ai = RR.ravel() @ theta_ai.reshape(9,-1)
                 tmp1_bj = RR.ravel() @ theta_bj.reshape(9,-1)
-                aibj_3  = np.outer(tmp1_ai, tmp_bj * 5)
-                aibj_3 -= np.outer(tmp_ai, tmp1_bj * 5)
+                aibj_3  = np.outer(tmp_ai, tmp1_bj * 5)
+                aibj_3 -= np.outer(tmp1_ai, tmp_bj * 5)
 
                 mu_R_ai = einsum('xa,y->xya', mu_ai, R_bar).reshape(9,-1)
                 mu_R_bj = einsum('xb,y->xyb', mu_bj, R_bar).reshape(9,-1)
-                aibj_3 += (2 * mu_R_ai.T) @ theta_bj.reshape(9,-1)
-                aibj_3 -= theta_ai.reshape(9,-1).T @ (mu_R_bj * 2)
+                aibj_3 -= (2 * mu_R_ai.T) @ theta_bj.reshape(9,-1)
+                aibj_3 += theta_ai.reshape(9,-1).T @ (mu_R_bj * 2)
 
                 aibj_3 /= R**4
 
@@ -133,7 +133,7 @@ def pair_energy_multipole(
 
             e_bj = e_vo[j]
             aibj2 = aibj * aibj / (e_ai[:,None] + e_bj[None,:])
-            e_mp2_pair[i,j] = -8 * np.sum(aibj2)
+            e_mp2_pair[i,j] = -4 * np.sum(aibj2)
 
     e_mp2_pair += e_mp2_pair.T
     return e_mp2_pair

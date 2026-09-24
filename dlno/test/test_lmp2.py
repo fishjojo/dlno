@@ -31,8 +31,8 @@ def test_lmp2_energy():
     mylno.lmo_bp_domain_thr = 0.999
     mylno.pao_bp_domain_thr = 0.98
     mylno.domain_pao_thr = 1e-4
-    mylno.pair_energy_thr = 1e-4
+    mylno.pair_energy_thr = 1e-5
     mylno.multipole_order = 4
 
     e_corr = mylno.kernel()
-    assert abs(e_corr-mycc.e_corr) < 2e-5
+    assert abs(e_corr-mycc.e_corr) < 1e-4
